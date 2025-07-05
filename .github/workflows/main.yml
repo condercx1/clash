@@ -4,7 +4,9 @@ name: Auto Update Clash Config
 # 触发条件
 on:
   schedule:
-    - cron: '0 */1 * * *'
+    # 在每小时的第18分钟触发。
+    # TopChina/proxy-list 大约在 xx:20 更新，我们提前启动以等待更新。
+    - cron: '18 */1 * * *'
   workflow_dispatch:
 
 # 【重要】添加这部分权限设置
@@ -16,6 +18,46 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # 新增步骤：等待上游仓库更新
+      - name: Wait for Upstream README.md Update
+        env:
+          # GITHUB_TOKEN 用于授权 API 请求，防止速率限制
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER="TopChina"
+          REPO="proxy-list"
+          FILE_PATH="README.md"
+          API_URL="https://api.github.com/repos/${OWNER}/${REPO}/commits?path=${FILE_PATH}&per_page=1"
+
+          echo "Fetching initial commit SHA for ${OWNER}/${REPO}/${FILE_PATH}..."
+          # 使用 curl 和 jq 获取文件最新的 commit SHA
+          INITIAL_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3+json" "${API_URL}" | jq -r '.[0].sha')
+
+          if [ -z "$INITIAL_SHA" ] || [ "$INITIAL_SHA" == "null" ]; then
+            echo "::error::Could not fetch initial commit SHA. Check API URL or token."
+            exit 1
+          fi
+
+          echo "Initial SHA is ${INITIAL_SHA}. Waiting for a new commit..."
+
+          # 设置一个超时时间，例如10分钟（40次 * 15秒 = 600秒）
+          # 防止上游仓库不更新导致工作流一直运行
+          for i in $(seq 1 40); do
+            sleep 15
+            LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3+json" "${API_URL}" | jq -r '.[0].sha')
+            
+            echo "Checking... Current latest SHA is ${LATEST_SHA}"
+
+            if [ "$LATEST_SHA" != "$INITIAL_SHA" ]; then
+              echo "✅ New commit detected: ${LATEST_SHA}"
+              echo "Proceeding immediately with the workflow."
+              exit 0 # 成功退出，工作流继续
+            fi
+          done
+
+          echo "::error::Timeout: No update detected within 10 minutes. Aborting."
+          exit 1 # 超时失败，工作流终止
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
