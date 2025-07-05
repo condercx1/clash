@@ -139,10 +139,6 @@ proxy-groups:
       - AI
       - 自动选择
       - 全部节点
-      - 香港节点
-      - 美国节点
-      - 日本节点
-      - 新加坡节点
       - DIRECTLY
     icon: "https://raw.githubusercontent.com/Mithcell-Ma/icon/refs/heads/main/Manual_Test_Log.png"
 
@@ -183,29 +179,6 @@ proxy-groups:
   - {name: OneDrive, type: select, proxies: [DIRECTLY, Proxy], icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/OneDrive.png"}
   - {name: Trackerslist, type: select, proxies: [DIRECTLY, Proxy], icon: "https://github.com/DustinWin/ruleset_geodata/releases/download/icons/trackerslist.png"}
 
-  - name: 香港节点
-    type: select
-    proxies: [] # 脚本将填充
-    filter: "(?i)(香港|hk|🇭🇰|hong\\s?kong)"
-    icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Hong_Kong.png"
-    
-  - name: 美国节点
-    type: select
-    proxies: [] # 脚本将填充
-    filter: "(?i)(🇺🇸|美国|US|united\\s?states|america|usa|洛杉矶|达拉斯|New\\s?York|西雅图)"
-    icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/United_States.png"
-    
-  - name: 新加坡节点
-    type: select
-    proxies: [] # 脚本将填充
-    filter: "(?i)(🇸🇬|新加坡|狮城|SG|Singapore)"
-    icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Singapore.png"
-    
-  - name: 日本节点
-    type: select
-    proxies: [] # 脚本将填充
-    filter: "(?i)(🇯🇵|日本|東京|东京|JP|japan|tokyo|osaka)"
-    icon: "https://testingcf.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Japan.png"
 
   - name: 全部节点
     type: select
