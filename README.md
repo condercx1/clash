@@ -1,1 +1,3 @@
 # clash
+订阅链接
+https://raw.githubusercontent.com/JanuaryEleX/clash/refs/heads/main/1.yaml
