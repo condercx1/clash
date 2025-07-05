@@ -4,9 +4,8 @@ name: Auto Update Clash Config
 # 触发条件
 on:
   schedule:
-    # 在每小时的第18分钟触发。
-    # TopChina/proxy-list 大约在 xx:20 更新，我们提前启动以等待更新。
-    - cron: '18 */1 * * *'
+    # 使用 GitHub Actions 允许的最快频率：每5分钟。
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 # 【重要】添加这部分权限设置
@@ -15,51 +14,83 @@ permissions:
 
 # 任务
 jobs:
-  build:
+  # Job 1: 检查并等待更新
+  check-for-update:
     runs-on: ubuntu-latest
+    outputs:
+      has_update: ${{ steps.check.outputs.has_update }}
+      latest_sha: ${{ steps.check.outputs.latest_sha }}
     steps:
-      # 新增步骤：等待上游仓库更新
-      - name: Wait for Upstream README.md Update
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for updates or wait for it
+        id: check
         env:
-          # GITHUB_TOKEN 用于授权 API 请求，防止速率限制
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           OWNER="TopChina"
           REPO="proxy-list"
           FILE_PATH="README.md"
+          STATE_FILE="upstream_commit.sha"
           API_URL="https://api.github.com/repos/${OWNER}/${REPO}/commits?path=${FILE_PATH}&per_page=1"
 
-          echo "Fetching initial commit SHA for ${OWNER}/${REPO}/${FILE_PATH}..."
-          # 使用 curl 和 jq 获取文件最新的 commit SHA
-          INITIAL_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3+json" "${API_URL}" | jq -r '.[0].sha')
+          # 读取本地记录的上一个SHA
+          PREVIOUS_SHA=""
+          if [ -f "$STATE_FILE" ]; then
+            PREVIOUS_SHA=$(cat "$STATE_FILE")
+          fi
+          echo "Previous recorded SHA: ${PREVIOUS_SHA:-'None'}"
 
-          if [ -z "$INITIAL_SHA" ] || [ "$INITIAL_SHA" == "null" ]; then
-            echo "::error::Could not fetch initial commit SHA. Check API URL or token."
+          # 获取上游最新的SHA
+          LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "${API_URL}" | jq -r '.[0].sha')
+          if [ -z "$LATEST_SHA" ] || [ "$LATEST_SHA" == "null" ]; then
+            echo "::error::Could not fetch latest commit SHA from upstream."
             exit 1
           fi
+          echo "Latest upstream SHA: $LATEST_SHA"
 
-          echo "Initial SHA is ${INITIAL_SHA}. Waiting for a new commit..."
-
-          # 设置一个超时时间，例如10分钟（40次 * 15秒 = 600秒）
-          # 防止上游仓库不更新导致工作流一直运行
-          for i in $(seq 1 40); do
+          # --- 核心逻辑 ---
+          # 如果SHA已经变了，说明更新已发生
+          if [ "$LATEST_SHA" != "$PREVIOUS_SHA" ]; then
+            echo "🚀 New update already found! Proceeding immediately."
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 如果SHA没变，进入动态等待模式，尝试捕捉即时更新
+          echo "No update yet. Entering live-wait mode for up to 270 seconds..."
+          # 循环等待，总时长略小于5分钟，避免与下一次cron重叠
+          for i in $(seq 1 18); do # 18 * 15秒 = 270秒 = 4.5分钟
             sleep 15
-            LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3+json" "${API_URL}" | jq -r '.[0].sha')
-            
-            echo "Checking... Current latest SHA is ${LATEST_SHA}"
-
-            if [ "$LATEST_SHA" != "$INITIAL_SHA" ]; then
-              echo "✅ New commit detected: ${LATEST_SHA}"
-              echo "Proceeding immediately with the workflow."
-              exit 0 # 成功退出，工作流继续
+            CURRENT_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "${API_URL}" | jq -r '.[0].sha')
+            echo "  ... waiting, checking again ($i/18)"
+            if [ "$CURRENT_SHA" != "$PREVIOUS_SHA" ]; then
+              echo "✅ New update captured live! Proceeding."
+              echo "has_update=true" >> $GITHUB_OUTPUT
+              echo "latest_sha=${CURRENT_SHA}" >> $GITHUB_OUTPUT
+              exit 0
             fi
           done
 
-          echo "::error::Timeout: No update detected within 10 minutes. Aborting."
-          exit 1 # 超时失败，工作流终止
-
+          echo "No update detected in this 5-minute window. Exiting."
+          echo "has_update=false" >> $GITHUB_OUTPUT
+          
+  # Job 2: 执行更新和提交
+  update-and-commit:
+    needs: check-for-update # 依赖于检查job
+    if: needs.check-for-update.outputs.has_update == 'true' # 仅在有更新时运行
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      
+      # 写入最新的SHA到状态文件，为提交做准备
+      - name: Create/Update state file
+        run: echo "${{ needs.check-for-update.outputs.latest_sha }}" > upstream_commit.sha
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -74,8 +105,8 @@ jobs:
       - name: Run the update script
         run: python update_clash.py
 
-      - name: Commit and push if changes
+      - name: Commit and push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: '🎉 Auto-update Clash config'
-          file_pattern: 1.yaml
+          commit_message: '🎉 Auto-update config from upstream commit ${{ needs.check-for-update.outputs.latest_sha }}'
+          file_pattern: '1.yaml upstream_commit.sha'
