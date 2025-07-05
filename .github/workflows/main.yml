@@ -3,48 +3,37 @@ name: Auto Update Clash Config
 
 # 触发条件
 on:
-  # 1. 定时触发：使用 cron 语法，这里设置为每6小时执行一次
-  #    (0 */6 * * * 表示在每6小时的0分执行，例如 0:00, 6:00, 12:00, 18:00 UTC时间)
   schedule:
     - cron: '0 */1 * * *'
-  
-  # 2. 手动触发：允许你在 Actions 页面手动点击运行
   workflow_dispatch:
+
+# 【重要】添加这部分权限设置
+permissions:
+  contents: write
 
 # 任务
 jobs:
   build:
-    # 运行环境
     runs-on: ubuntu-latest
-
-    # 任务步骤
     steps:
-      # 步骤1: 检出仓库代码
-      # 这是必须的，让工作流可以访问你的仓库文件
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 步骤2: 设置 Python 环境
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10' # 你可以选择 3.8, 3.9, 3.10 等
+          python-version: '3.10'
 
-      # 步骤3: 安装 Python 依赖库
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests pyyaml
 
-      # 步骤4: 运行你的 Python 脚本
       - name: Run the update script
         run: python update_clash.py
 
-      # 步骤5: 将生成的文件提交到仓库
       - name: Commit and push if changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          # 提交信息
           commit_message: '🎉 Auto-update Clash config'
-          # 要提交的文件，这里是 1.yaml
           file_pattern: 1.yaml
