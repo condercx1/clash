@@ -42,8 +42,8 @@ jobs:
           fi
           echo "Previous recorded SHA: ${PREVIOUS_SHA:-'None'}"
 
-          # 获取上游最新的SHA
-          LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "${API_URL}" | jq -r '.[0].sha')
+          # 【重要改动】在 curl 命令中添加 -H 'Cache-Control: no-cache' 来禁用API缓存
+          LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Cache-Control: no-cache" "${API_URL}" | jq -r '.[0].sha')
           if [ -z "$LATEST_SHA" ] || [ "$LATEST_SHA" == "null" ]; then
             echo "::error::Could not fetch latest commit SHA from upstream."
             exit 1
@@ -51,7 +51,6 @@ jobs:
           echo "Latest upstream SHA: $LATEST_SHA"
 
           # --- 核心逻辑 ---
-          # 如果SHA已经变了，说明更新已发生
           if [ "$LATEST_SHA" != "$PREVIOUS_SHA" ]; then
             echo "🚀 New update already found! Proceeding immediately."
             echo "has_update=true" >> $GITHUB_OUTPUT
@@ -59,12 +58,11 @@ jobs:
             exit 0
           fi
           
-          # 如果SHA没变，进入动态等待模式，尝试捕捉即时更新
           echo "No update yet. Entering live-wait mode for up to 270 seconds..."
-          # 循环等待，总时长略小于5分钟，避免与下一次cron重叠
-          for i in $(seq 1 18); do # 18 * 15秒 = 270秒 = 4.5分钟
+          for i in $(seq 1 18); do
             sleep 15
-            CURRENT_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "${API_URL}" | jq -r '.[0].sha')
+            # 【重要改动】在循环中同样禁用缓存
+            CURRENT_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Cache-Control: no-cache" "${API_URL}" | jq -r '.[0].sha')
             echo "  ... waiting, checking again ($i/18)"
             if [ "$CURRENT_SHA" != "$PREVIOUS_SHA" ]; then
               echo "✅ New update captured live! Proceeding."
@@ -77,10 +75,10 @@ jobs:
           echo "No update detected in this 5-minute window. Exiting."
           echo "has_update=false" >> $GITHUB_OUTPUT
           
-  # Job 2: 执行更新和提交
+  # Job 2: 执行更新和提交 (此部分无需改动)
   update-and-commit:
-    needs: check-for-update # 依赖于检查job
-    if: needs.check-for-update.outputs.has_update == 'true' # 仅在有更新时运行
+    needs: check-for-update
+    if: needs.check-for-update.outputs.has_update == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -88,7 +86,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # 写入最新的SHA到状态文件，为提交做准备
       - name: Create/Update state file
         run: echo "${{ needs.check-for-update.outputs.latest_sha }}" > upstream_commit.sha
 
