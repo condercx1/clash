@@ -162,7 +162,7 @@ def generate_clash_config(proxies_data, template_str, update_time_str=None):
     
     # --- 关键改动：在这里添加时间信息节点 ---
     if update_time_str:
-        info_node_name = f"⏰ 更新: {update_time_str}"
+        info_node_name = f"⏰: {update_time_str}"
         # 添加到名称列表的开头
         proxy_names.append(info_node_name)
         # 创建一个假的代理节点，用于显示信息
