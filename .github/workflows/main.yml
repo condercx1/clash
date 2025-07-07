@@ -1,109 +1,90 @@
-# 工作流名称
+# =========================================================================
+#   方案 B: 缩短运行时间
+#   - cron: 保持 '*/5 * * * *' (每5分钟运行一次)
+#   - sleep: 缩短至 180 秒 (3分钟)
+#   - 优点: 更新的最大理论延迟较短，约5分钟。
+#   - 缺点: 在平台严重拥堵时，仍有被跳过的风险。
+# =========================================================================
+
 name: Auto Update Clash Config
 
-# 触发条件
 on:
-  schedule:
-    # 使用 GitHub Actions 允许的最快频率：每5分钟。
-    - cron: '*/5 * * * *'
+  # 手动触发
   workflow_dispatch:
+  # 定时触发，每5分钟运行一次
+  schedule:
+    - cron: '*/5 * * * *'
 
-# 【重要】添加这部分权限设置
-permissions:
-  contents: write
-
-# 任务
 jobs:
-  # Job 1: 检查并等待更新
   check-for-update:
     runs-on: ubuntu-latest
-    outputs:
-      has_update: ${{ steps.check.outputs.has_update }}
-      latest_sha: ${{ steps.check.outputs.latest_sha }}
     steps:
-      - name: Checkout repository
+      - name: Checkout local repository
         uses: actions/checkout@v4
 
-      - name: Check for updates or wait for it
-        id: check
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Get local SHA
+        id: local_sha
         run: |
-          OWNER="TopChina"
-          REPO="proxy-list"
-          FILE_PATH="README.md"
-          STATE_FILE="upstream_commit.sha"
-          API_URL="https://api.github.com/repos/${OWNER}/${REPO}/commits?path=${FILE_PATH}&per_page=1"
+          # 读取本地记录的 SHA 值
+          sha=$(cat ./latest_sha.txt)
+          echo "LOCAL_SHA=$sha" >> $GITHUB_ENV
 
-          # 读取本地记录的上一个SHA
-          PREVIOUS_SHA=""
-          if [ -f "$STATE_FILE" ]; then
-            PREVIOUS_SHA=$(cat "$STATE_FILE")
-          fi
-          echo "Previous recorded SHA: ${PREVIOUS_SHA:-'None'}"
+      - name: Live Check for Remote SHA
+        id: live_check
+        run: |
+          # 实时获取远程文件的最新 SHA，并禁用缓存
+          REMOTE_SHA=""
+          # *** 修改点: 将循环次数从18改为12 ***
+          # 总共循环 12 次 * 15 秒 = 180 秒 (3分钟)
+          for i in $(seq 1 12); do 
+            # 使用 curl 获取最新的 commit SHA，重点是禁用缓存
+            # -H "Cache-Control: no-cache": 强制请求不使用任何缓存
+            # -H "Pragma: no-cache": 兼容旧的HTTP/1.0协议
+            # 在URL后添加随机参数 "?$(date +%s)" 确保每次请求的URL都不同，防止CDN缓存
+            LATEST_COMMIT_INFO=$(curl -s -H "Accept: application/vnd.github.v3+json" -H "Cache-Control: no-cache" -H "Pragma: no-cache" \
+              "https://api.github.com/repos/MetaCubeX/Clash.Meta/commits/alpha?path=config.yaml&$(date +%s)")
+            
+            # 从返回的JSON中提取SHA值
+            REMOTE_SHA=$(echo "$LATEST_COMMIT_INFO" | grep -o '"sha": *"[^"]*"' | head -n1 | cut -d'"' -f4)
 
-          # 【重要改动】在 curl 命令中添加 -H 'Cache-Control: no-cache' 来禁用API缓存
-          LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Cache-Control: no-cache" "${API_URL}" | jq -r '.[0].sha')
-          if [ -z "$LATEST_SHA" ] || [ "$LATEST_SHA" == "null" ]; then
-            echo "::error::Could not fetch latest commit SHA from upstream."
-            exit 1
-          fi
-          echo "Latest upstream SHA: $LATEST_SHA"
+            echo "Current remote SHA: $REMOTE_SHA"
+            echo "Local SHA: ${{ env.LOCAL_SHA }}"
 
-          # --- 核心逻辑 ---
-          if [ "$LATEST_SHA" != "$PREVIOUS_SHA" ]; then
-            echo "🚀 New update already found! Proceeding immediately."
-            echo "has_update=true" >> $GITHUB_OUTPUT
-            echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "No update yet. Entering live-wait mode for up to 270 seconds..."
-          for i in $(seq 1 18); do
-            sleep 15
-            # 【重要改动】在循环中同样禁用缓存
-            CURRENT_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Cache-Control: no-cache" "${API_URL}" | jq -r '.[0].sha')
-            echo "  ... waiting, checking again ($i/18)"
-            if [ "$CURRENT_SHA" != "$PREVIOUS_SHA" ]; then
-              echo "✅ New update captured live! Proceeding."
-              echo "has_update=true" >> $GITHUB_OUTPUT
-              echo "latest_sha=${CURRENT_SHA}" >> $GITHUB_OUTPUT
-              exit 0
+            if [ "$REMOTE_SHA" != "${{ env.LOCAL_SHA }}" ] && [ -n "$REMOTE_SHA" ]; then
+              echo "✅ New update found! SHA: $REMOTE_SHA"
+              echo "UPDATE_FOUND=true" >> $GITHUB_OUTPUT
+              echo "REMOTE_SHA=$REMOTE_SHA" >> $GITHUB_OUTPUT
+              exit 0 # 找到更新，成功退出循环
+            fi
+
+            # 如果不是最后一次循环，则等待15秒
+            if [ $i -lt 12 ]; then
+              echo "No update yet. Waiting for 15 seconds... (Attempt $i/12)"
+              sleep 15
             fi
           done
-
-          echo "No update detected in this 5-minute window. Exiting."
-          echo "has_update=false" >> $GITHUB_OUTPUT
           
-  # Job 2: 执行更新和提交 (此部分无需改动)
-  update-and-commit:
-    needs: check-for-update
-    if: needs.check-for-update.outputs.has_update == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Create/Update state file
-        run: echo "${{ needs.check-for-update.outputs.latest_sha }}" > upstream_commit.sha
+          echo "UPDATE_FOUND=false" >> $GITHUB_OUTPUT
+          echo "No update found after 3 minutes."
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
+      - name: Update files if new version is found
+        if: steps.live_check.outputs.UPDATE_FOUND == 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install requests pyyaml
-
-      - name: Run the update script
-        run: python update_clash.py
-
-      - name: Commit and push changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: '🎉 Auto-update config from upstream commit ${{ needs.check-for-update.outputs.latest_sha }}'
-          file_pattern: '1.yaml upstream_commit.sha'
+          # 下载最新的 config.yaml
+          curl -L -o ./config.yaml "https://raw.githubusercontent.com/MetaCubeX/Clash.Meta/alpha/config.yaml"
+          # 将新的 SHA 写入文件
+          echo "${{ steps.live_check.outputs.REMOTE_SHA }}" > ./latest_sha.txt
+          
+          # 配置 Git
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          # 提交并推送
+          git add ./config.yaml ./latest_sha.txt
+          # 检查是否有文件变动
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: auto update Clash Meta config.yaml to latest"
+            git push
+          fi
