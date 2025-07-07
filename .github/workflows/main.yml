@@ -1,19 +1,18 @@
+# =========================================================================
+#   最终优化版：外部触发 + 即时检查 (最快速度)
+# =========================================================================
 
-# 工作流名称
 name: Auto Update Clash Config
 
-# 触发条件
 on:
-  schedule:
-    - cron: '*/10 * * * *'
+  # 只保留外部触发器
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# 任务
 jobs:
-  # Job 1: 检查并等待更新
+  # Job 1: 检查更新 (不再等待)
   check-for-update:
     runs-on: ubuntu-latest
     outputs:
@@ -23,7 +22,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check for updates or wait for it
+      # *** 核心修改：移除了所有 sleep 和 for 循环 ***
+      - name: Instantly check for updates
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,12 +34,14 @@ jobs:
           STATE_FILE="upstream_commit.sha"
           API_URL="https://api.github.com/repos/${OWNER}/${REPO}/commits?path=${FILE_PATH}&per_page=1"
 
+          # 1. 读取本地记录的 SHA
           PREVIOUS_SHA=""
           if [ -f "$STATE_FILE" ]; then
             PREVIOUS_SHA=$(cat "$STATE_FILE")
           fi
           echo "Previous recorded SHA: ${PREVIOUS_SHA:-'None'}"
 
+          # 2. 立即获取上游最新的 SHA (禁用缓存)
           LATEST_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Cache-Control: no-cache" "${API_URL}" | jq -r '.[0].sha')
           if [ -z "$LATEST_SHA" ] || [ "$LATEST_SHA" == "null" ]; then
             echo "::error::Could not fetch latest commit SHA from upstream."
@@ -47,29 +49,15 @@ jobs:
           fi
           echo "Latest upstream SHA: $LATEST_SHA"
 
+          # 3. 直接比较，不再等待
           if [ "$LATEST_SHA" != "$PREVIOUS_SHA" ]; then
-            echo "🚀 New update already found! Proceeding immediately."
+            echo "✅ New update found! SHA: $LATEST_SHA"
             echo "has_update=true" >> $GITHUB_OUTPUT
             echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
-            exit 0
+          else
+            echo "No update found at this moment. Exiting."
+            echo "has_update=false" >> $GITHUB_OUTPUT
           fi
-          
-          # 等待逻辑保持不变，依然是4.5分钟
-          echo "No update yet. Entering live-wait mode for up to 270 seconds..."
-          for i in $(seq 1 18); do
-            sleep 15
-            CURRENT_SHA=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Cache-Control: no-cache" "${API_URL}" | jq -r '.[0].sha')
-            echo "  ... waiting, checking again ($i/18)"
-            if [ "$CURRENT_SHA" != "$PREVIOUS_SHA" ]; then
-              echo "✅ New update captured live! Proceeding."
-              echo "has_update=true" >> $GITHUB_OUTPUT
-              echo "latest_sha=${CURRENT_SHA}" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          done
-
-          echo "No update detected in this window. Exiting."
-          echo "has_update=false" >> $GITHUB_OUTPUT
           
   # Job 2: 执行更新和提交 (此部分无需改动)
   update-and-commit:
