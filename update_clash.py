@@ -9,7 +9,6 @@ from datetime import datetime
 RAW_URL = 'https://raw.githubusercontent.com/TopChina/proxy-list/main/README.md'
 OUTPUT_YAML_FILENAME = '1.yaml' # 直接在当前目录生成
 
-# --- 【已修复】Clash 模板 ---
 CLASH_TEMPLATE = r"""
 mixed-port: 7890
 allow-lan: true
@@ -35,7 +34,6 @@ proxies:
 
 # proxy-groups部分，脚本会在此基础上填充节点
 proxy-groups:
-    # 修正了此处的YAML语法错误，补上了 '['
     - { name: '🚀 节点选择', type: select, proxies: ['♻️ 自动选择', '💥 故障转移', 'DIRECT'] }
     - { name: '♻️ 自动选择', type: url-test, proxies: [], url: 'http://www.gstatic.com/generate_204', interval: 300 }
     - { name: '💥 故障转移', type: fallback, proxies: [], url: 'http://www.gstatic.com/generate_204', interval: 300 }
@@ -102,6 +100,35 @@ def get_country_emoji_map_extended():
         "未知地区": "🏳️"
     }
 
+# --- 【新增】解析更新时间的函数 ---
+def parse_update_time(content):
+    """从 README 内容中解析更新时间并格式化。"""
+    try:
+        # 1. 先找到“更新日期”这个标题
+        section_match = re.search(r'## \*\*更新日期\*\*(.+?)(?=##|$)', content, re.DOTALL)
+        if not section_match:
+            print("警告: 未在README中找到“更新日期”部分。")
+            return None
+        
+        section_content = section_match.group(1)
+        
+        # 2. 在该部分中找到具体的日期行，例如“2025年07月07日 20:44”
+        date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{2}:\d{2})', section_content)
+        if not date_match:
+            print("警告: 未能解析出具体的更新日期时间。")
+            return None
+            
+        # 3. 提取并格式化
+        _year, month, day, time = date_match.groups()
+        # int()可以自动处理'07'为7
+        formatted_time = f"{int(month)}.{int(day)}/{time}"
+        print(f"成功解析并格式化更新时间: {formatted_time}")
+        return formatted_time
+    except Exception as e:
+        print(f"解析更新时间时发生错误: {e}")
+        return None
+
+
 def parse_proxies_from_readme(content):
     """从 README 内容中解析代理信息。"""
     print("正在解析代理信息...")
@@ -123,16 +150,33 @@ def parse_proxies_from_readme(content):
     print(f"成功解析到 {len(proxies)} 个代理节点。")
     return proxies
 
-def generate_clash_config(proxies_data, template_str):
-    """根据抓取的节点和模板生成Clash配置。"""
+# --- 【修改】生成配置的函数，增加了 update_time_str 参数 ---
+def generate_clash_config(proxies_data, template_str, update_time_str=None):
+    """根据抓取的节点、更新时间和模板生成Clash配置。"""
     print("正在生成 Clash 配置文件...")
     config = yaml.safe_load(template_str)
 
-    # 生成节点列表和节点名称列表
+    # 初始化节点列表和名称列表
     new_proxies_list = []
     proxy_names = []
-    country_count = {}
+    
+    # --- 关键改动：在这里添加时间信息节点 ---
+    if update_time_str:
+        info_node_name = f"⏰ 更新: {update_time_str}"
+        # 添加到名称列表的开头
+        proxy_names.append(info_node_name)
+        # 创建一个假的代理节点，用于显示信息
+        new_proxies_list.append({
+            'name': info_node_name,
+            'type': 'ss',  # 类型不重要，因为它无法连接
+            'server': 'update.time.info',
+            'port': 1,
+            'cipher': 'aes-256-gcm',
+            'password': '0'
+        })
 
+    # 生成真实的代理节点
+    country_count = {}
     for proxy in proxies_data:
         country = proxy['country']
         country_count[country] = country_count.get(country, 0) + 1
@@ -149,30 +193,32 @@ def generate_clash_config(proxies_data, template_str):
 
     # 1. 完全替换模板中的proxies部分
     config['proxies'] = new_proxies_list
-    print(f"已将模板中的 'proxies' 替换为 {len(new_proxies_list)} 个新节点。")
+    print(f"已将模板中的 'proxies' 替换为 {len(new_proxies_list)} 个节点 (包含信息节点)。")
 
     # 2. 遍历代理组，填充节点
     for group in config['proxy-groups']:
-        # 对于自动测试和故障转移组，用所有节点填充
         if group['name'] in ['♻️ 自动选择', '💥 故障转移']:
-            group['proxies'] = proxy_names
-            print(f"已为代理组 '{group['name']}' 填充 {len(proxy_names)} 个节点。")
-        # 对于包含所有节点的选择组，将所有节点名称添加进去
-        # 注意: .extend()会修改原始列表，但这里模板里只有策略组，所以是安全的
+            # 对于自动测试组，只填充真实节点，排除信息节点
+            # 我们通过切片 proxy_names[1:] 来实现
+            real_proxy_names = proxy_names[1:] if update_time_str else proxy_names
+            group['proxies'] = real_proxy_names
+            print(f"已为代理组 '{group['name']}' 填充 {len(real_proxy_names)} 个真实节点。")
         elif group['name'] in ['🚀 节点选择', '国外网站']:
+            # 对于手动选择组，添加所有节点（包括信息节点）
             group['proxies'].extend(proxy_names)
-            print(f"已向代理组 '{group['name']}' 追加 {len(proxy_names)} 个节点。")
+            print(f"已向代理组 '{group['name']}' 追加 {len(proxy_names)} 个节点(含信息节点)。")
 
-    # 添加更新信息注释
-    update_time_str = f"# 配置生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n" \
-                      f"# 节点总数: {len(new_proxies_list)}\n" \
-                      f"# 数据来源: {RAW_URL}\n\n"
+    # 添加文件顶部的注释信息
+    update_time_str_comment = f"# 配置生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n" \
+                              f"# 节点总数: {len(proxies_data)}\n" \
+                              f"# 数据来源: {RAW_URL}\n\n"
     
     # 将配置字典转换回YAML字符串
     final_yaml_str = yaml.dump(config, sort_keys=False, allow_unicode=True, indent=2)
 
-    return update_time_str + final_yaml_str
+    return update_time_str_comment + final_yaml_str
 
+# --- 【修改】主执行流程 ---
 def main():
     """主执行流程"""
     print("开始执行任务...")
@@ -183,16 +229,21 @@ def main():
     except requests.exceptions.RequestException as e:
         print(f"下载 README 文件失败: {e}")
         return
+    
+    # --- 关键改动：先解析时间，再解析代理 ---
+    formatted_update_time = parse_update_time(readme_content)
         
     proxies = parse_proxies_from_readme(readme_content)
     if not proxies:
         print("未能解析到任何代理，程序终止。")
         return
     
-    final_config = generate_clash_config(proxies, CLASH_TEMPLATE)
+    # 将解析到的时间传递给生成函数
+    final_config = generate_clash_config(proxies, CLASH_TEMPLATE, formatted_update_time)
+
     with open(OUTPUT_YAML_FILENAME, 'w', encoding='utf-8') as f:
         f.write(final_config)
-    print(f"🎉 配置文件已成功生成: {OUTPUT_YAML_FILENAME}")
+    print(f"\n🎉 配置文件已成功生成: {OUTPUT_YAML_FILENAME}")
 
 if __name__ == '__main__':
     main()
