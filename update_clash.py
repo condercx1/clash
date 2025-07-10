@@ -9,19 +9,6 @@ from datetime import datetime
 RAW_URL = 'https://raw.githubusercontent.com/TopChina/proxy-list/main/README.md'
 OUTPUT_YAML_FILENAME = '1.yaml' # 直接在当前目录生成
 
-# 【新增】中转节点配置
-# 这个节点将被用作所有HTTP代理的前置代理，但不会显示在用户的选择列表中。
-TRANSIT_PROXY = {
-    'name': '🇭🇰 香港Hytron中转',
-    'type': 'ss',
-    'server': '36.141.40.61',
-    'port': 27490,
-    'password': '67c5ce45-7b48-473e-bf25-e4c830b0ed24',
-    'cipher': 'aes-128-gcm',
-    'udp': True
-}
-
-
 CLASH_TEMPLATE = r"""
 mixed-port: 7890
 allow-lan: true
@@ -61,7 +48,6 @@ rules:
 
 def get_country_emoji_map_extended():
     """返回一个详尽的、基于中文名称的国家/地区到国旗 Emoji 的映射字典。"""
-    # (此函数内容未改变，保持原样)
     return {
         # 亚洲
         "中国": "🇨🇳", "香港": "🇭🇰", "澳门": "🇲🇴", "台湾": "🇹🇼",
@@ -114,10 +100,11 @@ def get_country_emoji_map_extended():
         "未知地区": "🏳️"
     }
 
+# --- 【新增】解析更新时间的函数 ---
 def parse_update_time(content):
     """从 README 内容中解析更新时间并格式化。"""
-    # (此函数内容未改变，保持原样)
     try:
+        # 1. 先找到“更新日期”这个标题
         section_match = re.search(r'## \*\*更新日期\*\*(.+?)(?=##|$)', content, re.DOTALL)
         if not section_match:
             print("警告: 未在README中找到“更新日期”部分。")
@@ -125,12 +112,15 @@ def parse_update_time(content):
         
         section_content = section_match.group(1)
         
+        # 2. 在该部分中找到具体的日期行，例如“2025年07月07日 20:44”
         date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{2}:\d{2})', section_content)
         if not date_match:
             print("警告: 未能解析出具体的更新日期时间。")
             return None
             
+        # 3. 提取并格式化
         _year, month, day, time = date_match.groups()
+        # int()可以自动处理'07'为7
         formatted_time = f"{int(month)}.{int(day)}/{time}"
         print(f"成功解析并格式化更新时间: {formatted_time}")
         return formatted_time
@@ -141,7 +131,6 @@ def parse_update_time(content):
 
 def parse_proxies_from_readme(content):
     """从 README 内容中解析代理信息。"""
-    # (此函数内容未改变，保持原样)
     print("正在解析代理信息...")
     proxies = []
     pattern = re.compile(r'\|\s*([^|]+?:\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|')
@@ -161,90 +150,75 @@ def parse_proxies_from_readme(content):
     print(f"成功解析到 {len(proxies)} 个代理节点。")
     return proxies
 
-
-# --- 【核心修改】修改此函数以实现链式代理 ---
+# --- 【修改】生成配置的函数，增加了 update_time_str 参数 ---
 def generate_clash_config(proxies_data, template_str, update_time_str=None):
-    """根据抓取的节点、更新时间和模板生成Clash配置，并实现链式代理。"""
+    """根据抓取的节点、更新时间和模板生成Clash配置。"""
     print("正在生成 Clash 配置文件...")
     config = yaml.safe_load(template_str)
 
     # 初始化节点列表和名称列表
     new_proxies_list = []
-    # proxy_names 用于填充 proxy-groups，这是用户在UI上看到的列表
-    proxy_names_for_user_selection = []
+    proxy_names = []
     
-    # --- 步骤 1: 添加“假”的信息节点 (如果存在更新时间) ---
+    # --- 关键改动：在这里添加时间信息节点 ---
     if update_time_str:
         info_node_name = f"⏰: {update_time_str}"
-        proxy_names_for_user_selection.append(info_node_name)
+        # 添加到名称列表的开头
+        proxy_names.append(info_node_name)
+        # 创建一个假的代理节点，用于显示信息
         new_proxies_list.append({
             'name': info_node_name,
-            'type': 'ss',
+            'type': 'ss',  # 类型不重要，因为它无法连接
             'server': 'update.time.info',
             'port': 1,
             'cipher': 'aes-256-gcm',
             'password': '0'
         })
-    
-    # --- 步骤 2: 添加“隐身”的中转节点 ---
-    # 这个节点被添加到总的 proxies 列表中，但它的名字不会被加入到 proxy_names_for_user_selection
-    # 因此它在后端存在，可以被链式调用，但在前端UI上不可见。
-    new_proxies_list.append(TRANSIT_PROXY)
-    print(f"已添加隐身中转节点: '{TRANSIT_PROXY['name']}'")
 
-
-    # --- 步骤 3: 生成所有HTTP代理节点，并让他们通过中转节点 ---
+    # 生成真实的代理节点
     country_count = {}
     for proxy in proxies_data:
         country = proxy['country']
         country_count[country] = country_count.get(country, 0) + 1
         node_name = f"{proxy['emoji']} {country} {country_count[country]:02d}"
-        
-        # 将此节点名称添加到用户可选列表中
-        proxy_names_for_user_selection.append(node_name)
-        
-        # 创建HTTP代理配置，并使用 'chain' 关键字指向中转节点
-        http_proxy_with_chain = {
+        proxy_names.append(node_name)
+        new_proxies_list.append({
             'name': node_name,
             'type': 'http',
             'server': proxy['server'],
             'port': proxy['port'],
             'username': proxy['username'],
-            'password': proxy['password'],
-            # --- 这是实现链式代理的关键 ---
-            'chain': TRANSIT_PROXY['name'] 
-        }
-        new_proxies_list.append(http_proxy_with_chain)
+            'password': proxy['password']
+        })
 
     # 1. 完全替换模板中的proxies部分
     config['proxies'] = new_proxies_list
-    print(f"已将模板中的 'proxies' 替换为 {len(new_proxies_list)} 个节点 (包含信息节点和隐身中转节点)。")
+    print(f"已将模板中的 'proxies' 替换为 {len(new_proxies_list)} 个节点 (包含信息节点)。")
 
-    # 2. 遍历代理组，用我们准备好的、用户可见的节点列表来填充
+    # 2. 遍历代理组，填充节点
     for group in config['proxy-groups']:
-        # 对于自动测试组，只填充真实可用的HTTP代理节点
-        # 我们通过切片 proxy_names_for_user_selection[1:] 来排除信息节点
         if group['name'] in ['♻️ 自动选择', '💥 故障转移']:
-            real_proxy_names = proxy_names_for_user_selection[1:] if update_time_str else proxy_names_for_user_selection
+            # 对于自动测试组，只填充真实节点，排除信息节点
+            # 我们通过切片 proxy_names[1:] 来实现
+            real_proxy_names = proxy_names[1:] if update_time_str else proxy_names
             group['proxies'] = real_proxy_names
             print(f"已为代理组 '{group['name']}' 填充 {len(real_proxy_names)} 个真实节点。")
-        
-        # 对于手动选择组，添加所有用户可见的节点（包括信息节点）
         elif group['name'] in ['🚀 节点选择', '国外网站']:
-            group['proxies'].extend(proxy_names_for_user_selection)
-            print(f"已向代理组 '{group['name']}' 追加 {len(proxy_names_for_user_selection)} 个用户可见节点。")
+            # 对于手动选择组，添加所有节点（包括信息节点）
+            group['proxies'].extend(proxy_names)
+            print(f"已向代理组 '{group['name']}' 追加 {len(proxy_names)} 个节点(含信息节点)。")
 
     # 添加文件顶部的注释信息
     update_time_str_comment = f"# 配置生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n" \
-                              f"# 节点总数 (HTTP): {len(proxies_data)}\n" \
-                              f"# 数据来源: {RAW_URL}\n" \
-                              f"# 特别说明: 所有HTTP节点已配置通过 '{TRANSIT_PROXY['name']}' 进行链式代理。\n\n"
+                              f"# 节点总数: {len(proxies_data)}\n" \
+                              f"# 数据来源: {RAW_URL}\n\n"
     
     # 将配置字典转换回YAML字符串
     final_yaml_str = yaml.dump(config, sort_keys=False, allow_unicode=True, indent=2)
 
     return update_time_str_comment + final_yaml_str
 
+# --- 【修改】主执行流程 ---
 def main():
     """主执行流程"""
     print("开始执行任务...")
@@ -256,6 +230,7 @@ def main():
         print(f"下载 README 文件失败: {e}")
         return
     
+    # --- 关键改动：先解析时间，再解析代理 ---
     formatted_update_time = parse_update_time(readme_content)
         
     proxies = parse_proxies_from_readme(readme_content)
@@ -263,6 +238,7 @@ def main():
         print("未能解析到任何代理，程序终止。")
         return
     
+    # 将解析到的时间传递给生成函数
     final_config = generate_clash_config(proxies, CLASH_TEMPLATE, formatted_update_time)
 
     with open(OUTPUT_YAML_FILENAME, 'w', encoding='utf-8') as f:
